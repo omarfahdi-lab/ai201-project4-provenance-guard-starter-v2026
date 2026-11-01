@@ -48,16 +48,12 @@ def combine_signals(model_score: float, style_score: float, word_count: int | No
 
 
 LABEL_AI = (
-    "Our system thinks this piece was likely written with an AI tool. This is an "
-    "automated guess, not a final decision, and it can be wrong. If you wrote "
-    "this yourself, you can appeal and a person will review it."
+    "Our system flagged this as possibly AI-assisted. This is an automated guess "
+    "and it can be wrong. If you wrote this yourself, you can appeal and a "
+    "person will review it."
 )
 LABEL_HUMAN = "We think this was written by a person."
-LABEL_UNSURE = (
-    "We couldn't tell whether this was written by a person or with an AI tool, "
-    "so we aren't making a call either way. This is not an accusation, and "
-    "nothing about your post has changed."
-)
+LABEL_UNSURE = "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation."
 
 
 def score_to_label(score: float) -> tuple[str, str]:

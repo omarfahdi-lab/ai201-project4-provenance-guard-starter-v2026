@@ -217,18 +217,19 @@ than accuse the Sunday-cooking writer. But the 100-word cap only protects
 | Label | Score range | The exact text a reader sees |
 |---|---|---|
 | high-confidence human | 0.00 – under 0.40 | We think this was written by a person. |
-| unsure | 0.40 – under 0.70 | We couldn't tell whether this was written by a person or with an AI tool, so we aren't making a call either way. This is not an accusation, and nothing about your post has changed. |
-| high-confidence AI | 0.70 – 1.00 | Our system thinks this piece was likely written with an AI tool. This is an automated guess, not a final decision, and it can be wrong. If you wrote this yourself, you can appeal and a person will review it. |
+| unsure | 0.40 – under 0.70 | We couldn't tell who wrote this, so we're not making a call, and this is not an accusation. |
+| high-confidence AI | 0.70 – 1.00 | Our system flagged this as possibly AI-assisted. This is an automated guess and it can be wrong. If you wrote this yourself, you can appeal and a person will review it. |
 
 Every score from 0 to 1 falls in exactly one band. All three were reached in
 the calibration run above.
 
 **Why I worded the "unsure" one this way:** The person reading it probably wrote
-every word, so the label says outright that it isn't an accusation and that
-nothing happened to their post. It says "we couldn't tell" (the system's limit)
-rather than "this might be AI" (a suspicion about them). The AI label is the
-only one that mentions appealing, and it calls itself a guess that can be wrong,
-because that's the one a falsely accused writer will read.
+every word, so it says outright that it isn't an accusation. It says "we
+couldn't tell" (the system's limit) rather than "this might be AI" (a suspicion
+about them). I cut it down to one sentence so people actually read it. The AI
+label says "flagged as possibly AI-assisted" rather than "written with an AI
+tool", calls itself a guess that can be wrong, and is the one that mentions
+appealing, because a falsely accused writer is the one who'll read it.
 
 ---
 
@@ -248,9 +249,9 @@ $ curl -X POST http://127.0.0.1:5001/submit \
 ```json
 {
     "confidence": 0.7498,
-    "content_id": "a93c39a5b5b6",
+    "content_id": "e9ccdcb52ab6",
     "guess": "ai",
-    "label": "Our system thinks this piece was likely written with an AI tool. This is an automated guess, not a final decision, and it can be wrong. If you wrote this yourself, you can appeal and a person will review it.",
+    "label": "Our system flagged this as possibly AI-assisted. This is an automated guess and it can be wrong. If you wrote this yourself, you can appeal and a person will review it.",
     "model_score": 0.8605,
     "status": "decided",
     "style_score": 0.5838
@@ -262,47 +263,59 @@ $ curl -X POST http://127.0.0.1:5001/submit \
 ```bash
 $ curl -X POST http://127.0.0.1:5001/appeal \
   -H "Content-Type: application/json" \
-  -d '{"content_id": "a93c39a5b5b6", "reasoning": "I wrote this myself for my policy class. I write in a formal style because that is how we were taught to write essays."}'
+  -d '{"content_id": "e9ccdcb52ab6", "reasoning": "I wrote this myself for my policy class. I write in a formal style because that is how we were taught to write essays."}'
 ```
 
 ```json
 {
-    "content_id": "a93c39a5b5b6",
-    "message": "Thanks — your appeal is recorded. A person will review this piece, and the automated label won't be treated as final while they do.",
+    "content_id": "e9ccdcb52ab6",
+    "message": "Thanks \u2014 your appeal is recorded. A person will review this piece, and the automated label won't be treated as final while they do.",
     "original_guess": "ai",
     "status": "under_review"
 }
 ```
 
-**What the log shows afterwards**
+**What the log shows afterwards** (the third entry is a separate short submission I sent to check the new "unsure" wording)
 
 ```bash
-$ curl "http://127.0.0.1:5001/log?limit=2"
+$ curl "http://127.0.0.1:5001/log?limit=3"
 ```
 
 ```json
 {
-    "count": 2,
+    "count": 3,
     "entries": [
         {
             "combined_score": 0.7498,
-            "content_id": "a93c39a5b5b6",
+            "content_id": "e9ccdcb52ab6",
             "creator_id": "writer_042",
             "guess": "ai",
-            "label": "Our system thinks this piece was likely written with an AI tool. This is an automated guess, not a final decision, and it can be wrong. If you wrote this yourself, you can appeal and a person will review it.",
+            "label": "Our system flagged this as possibly AI-assisted. This is an automated guess and it can be wrong. If you wrote this yourself, you can appeal and a person will review it.",
             "model_score": 0.8605,
             "status": "decided",
             "style_score": 0.5838,
-            "timestamp": "2026-11-01T23:04:14+00:00",
+            "timestamp": "2026-11-01T23:43:18+00:00",
             "word_count": 122
         },
         {
-            "content_id": "a93c39a5b5b6",
+            "content_id": "e9ccdcb52ab6",
             "creator_id": "writer_042",
             "event": "appeal",
             "reasoning": "I wrote this myself for my policy class. I write in a formal style because that is how we were taught to write essays.",
             "status": "under_review",
-            "timestamp": "2026-11-01T23:04:14+00:00"
+            "timestamp": "2026-11-01T23:43:18+00:00"
+        },
+        {
+            "combined_score": 0.69,
+            "content_id": "e7b846284612",
+            "creator_id": "label_check",
+            "guess": "unsure",
+            "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.",
+            "model_score": 0.8548,
+            "status": "decided",
+            "style_score": 0.6309,
+            "timestamp": "2026-11-01T23:43:18+00:00",
+            "word_count": 34
         }
     ]
 }
@@ -326,21 +339,30 @@ not json                                    -> 400 {"error":"body_not_json_objec
 
 ## How I Used AI
 
-**Moment 1**
+I used Claude Code as a coding assistant on this project. The two moments below
+are where I made the call.
 
-- *What I asked for:* I gave Claude Code the full project brief and asked it to
-  build the service: the style signal, the combining rule, both routes.
-- *What came back:* A working `/submit` and `/appeal`, a style signal built from
-  sentence-length spread, MATTR and expressive punctuation, and a calibration
-  table showing the plainly-written human paragraph scoring 0.887 on signal one,
-  as AI-like as real AI text.
-- *What I changed:* TODO
+**Moment 1: the label wording**
 
-**Moment 2**
+- *What I asked for:* Help building the service from the brief: the style
+  signal, the combining rule, and the two routes, including first drafts of the
+  three labels.
+- *What came back:* Working code, plus a calibration table that showed my plain
+  human test paragraph scoring 0.887 on signal one, as AI-like as real AI text.
+  The draft labels were long, and the AI one said the piece was "likely written
+  with an AI tool".
+- *What I changed:* I rewrote two of the labels. I cut the "unsure" label down
+  to one sentence ("We couldn't tell who wrote this, so we're not making a call,
+  and this is not an accusation.") because a long hedge is easy to skim past. I
+  softened the AI label to "flagged this as possibly AI-assisted", because the
+  calibration table showed real human writing can score as high as AI, so the
+  label shouldn't read like a verdict.
 
-- *What I asked for:* I asked Claude to write my five acceptance criteria for me.
+**Moment 2: the acceptance criteria**
+
+- *What I asked for:* I asked for my five acceptance criteria to be written for me.
 - *What came back:* It declined to write them, because the brief says criteria
-  must be my own. Instead it set out options for each target with what each
+  must be my own. Instead it laid out options for each target and what each
   choice would mean (for example 0, 1 or 2 false positives out of 10, and a
   score gap of 0.30, 0.40 or 0.50).
 - *What I changed:* I chose the targets myself: at most 1 of 10 of my own pieces
