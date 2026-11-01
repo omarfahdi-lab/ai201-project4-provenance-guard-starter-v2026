@@ -18,8 +18,8 @@ doesn't, it's the service itself.
 Routes:
 
     POST /ping        the worked example. Already works. Don't edit it
-    POST /submit      ← YOU BUILD THIS (Milestone 3, 4, 5)
-    POST /appeal      ← YOU BUILD THIS (Milestone 5)
+    POST /submit      score a piece of text, log it, return the label
+    POST /appeal      a writer contests a decision; moves it to under_review
     GET  /log         the audit log. Already works
     GET  /health      is the service up, and is the model loaded
 """
@@ -30,6 +30,9 @@ from flask import Flask, jsonify, request
 
 import audit
 import config
+import detector
+import scoring
+import stylometry
 
 app = Flask(__name__)
 
@@ -148,14 +151,14 @@ def health():
     })
 
 
-# ── YOU BUILD THIS ────────────────────────────────────────────────────────────
+# ── The two routes ────────────────────────────────────────────────────────────
 
 @app.post("/submit")
 # @limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
 def submit():
     """
     Take a piece of text, decide about it, log the decision, answer.
-    ← TODO — Milestones 3, 4 and 5
+    Milestones 3, 4 and 5.
 
     Expects JSON:
         {"text": "...", "creator_id": "..."}
@@ -199,23 +202,74 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _reject("unknown", "body_not_json_object",
+                       "Send a JSON object with \"text\" and \"creator_id\".", 400)
 
-    # TODO: delete this and build the route.
+    text = payload.get("text")
+    creator_id = payload.get("creator_id")
+
+    if not isinstance(creator_id, str) or not creator_id.strip():
+        return _reject("unknown", "missing_creator_id",
+                       "\"creator_id\" is required and must be a non-empty string.", 400)
+    if not isinstance(text, str) or not text.strip():
+        return _reject(creator_id, "missing_text",
+                       "\"text\" is required and must be a non-empty string.", 400)
+    if len(text) > config.MAX_TEXT_CHARS:
+        return _reject(creator_id, "text_too_long",
+                       f"\"text\" is limited to {config.MAX_TEXT_CHARS} characters.", 413,
+                       text_length=len(text))
+
+    word_count = len(stylometry.words(text))
+    if word_count < config.MIN_WORDS_TO_SCORE:
+        return _reject(creator_id, "text_too_short",
+                       f"Send at least {config.MIN_WORDS_TO_SCORE} words — "
+                       "there isn't enough here to judge.", 400, word_count=word_count)
+
+    try:
+        model_score = detector.model_signal(text)
+    except (detector.DetectorUnavailable, ValueError) as exc:
+        return _reject(creator_id, "detector_unavailable", str(exc), 503)
+    style_score = stylometry.style_signal(text)
+
+    confidence = scoring.combine_signals(model_score, style_score, word_count)
+    guess, label = scoring.score_to_label(confidence)
+
+    content_id = uuid.uuid4().hex[:12]
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=confidence,
+        label=label,
+        status="decided",
+        word_count=word_count,
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /submit isn't built yet — see the TODO in app.py.",
-        "you_sent": {
-            "text_length": len(payload.get("text", "")),
-            "creator_id": payload.get("creator_id"),
-        },
-    }), 501
+        "content_id": content_id,
+        "guess": guess,
+        "confidence": confidence,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+        "status": "decided",
+    })
+
+
+def _reject(creator_id, reason, message, code, **extra):
+    """Refuse a request, but leave a trace of it in the audit log first."""
+    audit.log_rejection(creator_id=creator_id, reason=reason, http_status=code, **extra)
+    return jsonify({"error": reason, "message": message}), code
 
 
 @app.post("/appeal")
 def appeal():
     """
-    A writer says you got it wrong. ← TODO — Milestone 5
+    A writer says you got it wrong.
 
     Expects JSON:
         {"content_id": "...", "reasoning": "..."}
@@ -232,14 +286,37 @@ def appeal():
     to the person on the other end. It's the only thing standing between a
     wrong accusation and nothing at all.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "body_not_json_object",
+                        "message": "Send a JSON object with \"content_id\" and \"reasoning\"."}), 400
 
-    # TODO: delete this and build the route.
+    content_id = payload.get("content_id")
+    reasoning = payload.get("reasoning")
+    if not isinstance(content_id, str) or not content_id.strip():
+        return jsonify({"error": "missing_content_id",
+                        "message": "\"content_id\" is required."}), 400
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return jsonify({"error": "missing_reasoning",
+                        "message": "Tell us why you think we got it wrong in \"reasoning\"."}), 400
+
+    history = audit.entries_for(content_id.strip())
+    decision = next((e for e in history if e.get("status") == "decided"), None)
+    if decision is None:
+        return jsonify({"error": "unknown_content_id",
+                        "message": f"No submission found with content_id {content_id!r}."}), 404
+
+    audit.log_appeal(content_id=decision["content_id"],
+                     creator_id=decision["creator_id"],
+                     reasoning=reasoning.strip())
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /appeal isn't built yet — see the TODO in app.py.",
-        "you_sent": payload,
-    }), 501
+        "content_id": decision["content_id"],
+        "status": "under_review",
+        "original_guess": decision.get("guess"),
+        "message": "Thanks — your appeal is recorded. A person will review this piece, "
+                   "and the automated label won't be treated as final while they do.",
+    })
 
 
 # ── Already works ─────────────────────────────────────────────────────────────
