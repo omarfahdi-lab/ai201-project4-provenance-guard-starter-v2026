@@ -54,8 +54,22 @@ DETECTOR_MAX_TOKENS = 400
 # down BEFORE you code it, and to put the numbers in your README. Whatever you
 # decide, it goes here.
 
-WEIGHT_MODEL_SIGNAL = 0.5
-WEIGHT_STYLE_SIGNAL = 0.5
+WEIGHT_MODEL_SIGNAL = 0.6
+WEIGHT_STYLE_SIGNAL = 0.4
+
+# When the two signals are this far apart, they're disagreeing, and the
+# combined score gets pulled halfway back toward 0.5 (unsure).
+DISAGREEMENT_GAP = 0.4
+DISAGREEMENT_SHRINK = 0.5
+
+# Below this many words, the service will not call anything high-confidence
+# AI: the score is capped just under AI_THRESHOLD. Perplexity over a few dozen
+# tokens is noisy, and plain short writing is exactly what signal one accuses.
+MIN_WORDS_FOR_AI_LABEL = 100
+
+# Inputs the route refuses outright (400 / 413) rather than scoring.
+MIN_WORDS_TO_SCORE = 10
+MAX_TEXT_CHARS = 20_000
 
 
 # ─── Thresholds (Milestone 5) ────────────────────────────────────────────────
@@ -64,15 +78,15 @@ WEIGHT_STYLE_SIGNAL = 0.5
 #
 #   score < HUMAN_THRESHOLD          -> high-confidence human
 #   between the two                  -> unsure
-#   score > AI_THRESHOLD             -> high-confidence AI
+#   score >= AI_THRESHOLD            -> high-confidence AI
 #
 # ⚠️ This is where your false-positive decision from Milestone 1 actually gets
 # made. Widening the unsure band means fewer wrong accusations and more AI text
 # getting through. There is no setting that avoids the trade — only settings
 # that decide who pays for it.
 
-HUMAN_THRESHOLD = 0.35
-AI_THRESHOLD = 0.65
+HUMAN_THRESHOLD = 0.40
+AI_THRESHOLD = 0.70
 
 # ⚠️ One thing that catches people out in Milestone 5. A weighted average can
 # only land between its two inputs — so while `style_signal` is still the stub
