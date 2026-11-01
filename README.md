@@ -36,138 +36,314 @@
 
 ## What This Does
 
-<!-- The path a submission takes, from arriving to the label a reader sees.
-     Six or seven steps — this is the trace you wrote in Milestone 1. -->
+Provenance Guard is a small Flask service a writing site could call when someone
+posts their work. It makes a guess about whether the text was AI-generated, says
+how confident that guess is, shows the writer a plain-English label, and lets
+them appeal.
 
+**The path a submission takes:**
 
+1. **Arrives at `POST /submit`** (`app.py::submit`) as JSON with `text` and `creator_id`.
+2. **Gets checked.** Missing, empty or non-string `text` or `creator_id` → `400`;
+   fewer than 10 words → `400`; more than 20,000 characters → `413`. Every
+   refusal is still written to the audit log (`audit.log_rejection`) so nothing
+   disappears without a trace.
+3. **Signal one — the model signal** (`detector.py::model_signal`). GPT-2 runs
+   locally and measures how predictable the text is (perplexity), squashed to a
+   0–1 score where higher means more AI-like.
+4. **Signal two — the style signal** (`stylometry.py::style_signal`). Measures
+   the text's shape without reading it: sentence-length spread, vocabulary
+   variety, expressive punctuation. Also 0–1, higher means more AI-like.
+5. **Combined into one confidence score** (`scoring.py::combine_signals`): a
+   weighted average, pulled toward "unsure" when the signals disagree, and
+   capped below the AI line when the text is under 100 words.
+6. **Mapped to a label** (`scoring.py::score_to_label`): one of three full
+   sentences: likely AI, unsure, or written by a person.
+7. **Logged and returned.** A new `content_id` is generated, the decision
+   (both signal scores, the combined score, guess, label, status `decided`) is
+   appended to `logs/audit.jsonl`, and the same fields come back as JSON. If the
+   writer disagrees, `POST /appeal` with that `content_id` appends an appeal
+   entry and moves the item to `under_review`.
+
+**The contract**
+
+`POST /submit`
+
+| In | Type | Notes |
+|---|---|---|
+| `text` | string | required, 10+ words, ≤ 20,000 characters |
+| `creator_id` | string | required, non-empty |
+
+| Out (200) | Type | Notes |
+|---|---|---|
+| `content_id` | string | 12 hex chars; what `/appeal` needs |
+| `guess` | string | `"ai"`, `"unsure"` or `"human"` |
+| `confidence` | float 0–1 | the combined score; higher = more likely AI |
+| `label` | string | the sentence the writer sees |
+| `model_score` | float 0–1 | signal one |
+| `style_score` | float 0–1 | signal two |
+| `status` | string | always `"decided"` on a new submission |
+
+Errors come back as `{"error": "<code>", "message": "<sentence>"}` with `400`,
+`413`, or `503` (detector couldn't load).
+
+`POST /appeal`
+
+| In | Type | Notes |
+|---|---|---|
+| `content_id` | string | required; must match an earlier submission |
+| `reasoning` | string | required, non-empty: the writer's explanation |
+
+| Out (200) | Type | Notes |
+|---|---|---|
+| `content_id` | string | echoed back |
+| `status` | string | `"under_review"` |
+| `original_guess` | string | what the system had said |
+| `message` | string | confirmation for the writer |
+
+Unknown `content_id` → `404`; missing field → `400`. The original decision is
+never overwritten: the log is append-only, so the decision and the appeal sit
+side by side.
 
 ---
 
 ## Signals and Scoring
 
-<!-- For each signal: what property it measures, why that might differ between
-     human and AI writing, and WHAT IT CAN'T SEE.
-
-     The blind spot is not optional. If you can't name it you don't understand
-     the signal yet — and unit 8's attack set is built out of blind spots. -->
-
 ### Signal one — the model signal
 
-**What it measures:**
+**What it measures:** How predictable the text is to GPT-2 (perplexity over the
+first 400 tokens), turned into 0–1 by a logistic curve centred on perplexity 45.
+Low perplexity → high score → "more AI-like". I left the starter's midpoint
+(45) and steepness (1.6) unchanged.
 
-**Why that might differ between human and AI writing:**
+**Why that might differ between human and AI writing:** A language model writes
+by choosing likely next words, so its output is text a language model finds easy
+to predict. People make odder, more specific choices.
 
-**What it can't see:**
+**What it can't see:** Who wrote it. Predictability isn't authorship. Plain
+writing with common words in short sentences scores like AI. On my calibration
+set, a plainly written human paragraph about Sunday cooking scored **0.887**,
+almost identical to the clearly-AI paragraph (**0.898**). That's the writer most
+likely to be falsely accused: someone writing in a second language, a younger
+writer, anyone writing simply. The reverse hole: ornate or rare-word prose
+(or AI text with odd words swapped in) reads as human.
 
 ### Signal two — the style signal
 
-**What it measures:**
+**What it measures:** The shape of the text, from three measures in
+`stylometry.py`:
 
-**Why that might differ between human and AI writing:**
+| Measure | What I compute | Mapped to "AI-ness" | Weight |
+|---|---|---|---|
+| `sentence_length_spread` | stdev ÷ mean of words per sentence | `1 − spread/0.6`, clipped 0–1 | 0.5 |
+| `type_token_ratio` | moving-average TTR over 40-word windows | `(0.95 − mattr)/0.25`, clipped | 0.2 |
+| `punctuation_density` | `; : ( ) ! ?` and dashes per word (commas/periods excluded) | `1 − density/0.05`, clipped | 0.3 |
 
-**What it can't see:**
+`style_signal = 0.5·spread_ai + 0.2·ttr_ai + 0.3·punct_ai`
+
+**Why that might differ between human and AI writing:** Generated prose tends to
+march in even, mid-length sentences and use only "safe" punctuation. Human
+writing is lumpier: a three-word sentence next to a forty-word one, a dash, a
+question, an aside in parentheses.
+
+**What it can't see:** Meaning. It can't read at all. Anything that changes the
+shape without changing the substance moves it: splitting or merging sentences,
+adding a few dashes or exclamation marks, pasting in a quotation, adding typos.
+That's cheap to do on purpose. It also shares signal one's bias against plain
+writers: short, even sentences with no fancy punctuation look "AI-ish" here too
+(the Sunday-cooking paragraph scored **0.700**).
+
+Vocabulary variety turned out to run *backwards* from the usual claim on my
+samples: the clearly-AI paragraph had a high MATTR (0.925), and the plain human
+paragraph had the lowest (0.784). That's why it only gets 0.2 of the weight.
 
 ### The combining rule
 
-<!-- Write the rule in words, then give the numbers. What happens when the two
-     signals disagree? -->
-
 **The rule:**
 
-**The numbers:**
+1. Take a weighted average of the two signals, with the model signal counting more.
+2. If the two signals are 0.4 or more apart, they're disagreeing, and I pull
+   the score halfway back toward 0.5, because two methods disagreeing *is*
+   uncertainty and it should land in "unsure", not on a side.
+3. If the text is under 100 words, the score is capped at 0.69, just under the
+   AI line. Short text can be "unsure" at worst, never accused.
+
+**The numbers** (all in `config.py`):
+
+| Setting | Value |
+|---|---|
+| `WEIGHT_MODEL_SIGNAL` | 0.6 |
+| `WEIGHT_STYLE_SIGNAL` | 0.4 |
+| `DISAGREEMENT_GAP` | 0.4 |
+| `DISAGREEMENT_SHRINK` | 0.5 → `score = 0.5 + (score − 0.5) × 0.5` |
+| `MIN_WORDS_FOR_AI_LABEL` | 100 (cap = `AI_THRESHOLD − 0.01` = 0.69) |
+| `HUMAN_THRESHOLD` | 0.40 |
+| `AI_THRESHOLD` | 0.70 |
 
 **Where it lives:** `scoring.py::combine_signals`
 
-<!-- ⚠️ The grader checks your code against that line. If your rule lives
-     somewhere else, say where. -->
+**Calibration run** (both signals and the result, through the live service):
 
-**A case where my two signals split, and what my rule does with it:**
+| Input | Words | model | style | combined | Label |
+|---|---|---|---|---|---|
+| Clearly AI (short) | 71 | 0.898 | 0.712 | 0.690 (capped) | unsure |
+| Clearly AI (long) | 121 | 0.861 | 0.584 | 0.750 | **ai** |
+| Clearly AI, remote-work essay | 120 | 0.738 | 0.608 | 0.686 | unsure |
+| Lightly edited AI | 73 | 0.745 | 0.476 | 0.637 | unsure |
+| Casual human (bus story) | 73 | 0.344 | 0.045 | 0.225 | **human** |
+| Formal human (committee) | 51 | 0.378 | 0.357 | 0.369 | **human** |
+| Plain human (Sunday cooking) | 62 | 0.887 | 0.700 | 0.690 (capped) | unsure |
+| Casual but predictable human | 59 | 0.861 | 0.238 | 0.556 | unsure |
 
+**A case where my two signals split, and what my rule does with it:** The
+"casual but predictable" paragraph ("I went to the store and I got some milk…
+My dog was happy to see me — he always is!"). Signal one says 0.861 (common
+words, very predictable); signal two says 0.238 (sentence lengths vary, a dash
+and an exclamation mark). They're 0.62 apart, so the disagreement rule fires:
+the weighted average of 0.612 gets pulled to **0.556 → unsure**. That's what I
+want. A person wrote it, and the system admits it can't tell instead of leaning
+on the signal that happens to be loudest.
 
+**What this costs:** the rule is conservative. A clearly generated 120-word
+remote-work essay scored 0.686 and got "unsure", not "AI". I'd rather miss that
+than accuse the Sunday-cooking writer. But the 100-word cap only protects
+*short* plain writing. A long, plainly written human piece could still cross
+0.70, and that's the false positive I expect next unit to find.
 
 ---
 
 ## Label Variants
 
-<!-- The exact text of all three labels, as a reader would see them, and the
-     score range each covers.
-
-     Write them for someone who has never heard the word "threshold". -->
-
 | Label | Score range | The exact text a reader sees |
 |---|---|---|
-| high-confidence human |  |  |
-| unsure |  |  |
-| high-confidence AI |  |  |
+| high-confidence human | 0.00 – under 0.40 | We think this was written by a person. |
+| unsure | 0.40 – under 0.70 | We couldn't tell whether this was written by a person or with an AI tool, so we aren't making a call either way. This is not an accusation, and nothing about your post has changed. |
+| high-confidence AI | 0.70 – 1.00 | Our system thinks this piece was likely written with an AI tool. This is an automated guess, not a final decision, and it can be wrong. If you wrote this yourself, you can appeal and a person will review it. |
 
-**Why I worded the "unsure" one this way:**
-<!-- It's the hardest of the three. It has to admit uncertainty without
-     sounding like an accusation, because the person reading it may well have
-     written every word themselves. -->
+Every score from 0 to 1 falls in exactly one band. All three were reached in
+the calibration run above.
 
-
+**Why I worded the "unsure" one this way:** The person reading it probably wrote
+every word, so the label says outright that it isn't an accusation and that
+nothing happened to their post. It says "we couldn't tell" (the system's limit)
+rather than "this might be AI" (a suspicion about them). The AI label is the
+only one that mentions appealing, and it calls itself a guess that can be wrong,
+because that's the one a falsely accused writer will read.
 
 ---
 
 ## Sample Run
 
-<!-- One submission and one appeal, pasted as text: the request, the response,
-     and the log entries. -->
+The service was run with `PORT=5001`, because macOS's AirPlay Receiver holds
+port 5000 on my machine. Otherwise the commands are the same.
 
 **A submission**
 
-<!-- The response needs content_id, guess, confidence, label, AND both
-     signal scores - model_score and style_score. Unit 8's tools read those
-     two off the response, so leaving them out costs you next unit's
-     diagnostics. -->
-
 ```bash
-$ curl -X POST http://127.0.0.1:5000/submit \
+$ curl -X POST http://127.0.0.1:5001/submit \
   -H "Content-Type: application/json" \
-  -d '{"text": "...", "creator_id": "..."}'
+  -d '{"text": "Artificial intelligence has transformed the way we live and work. It offers numerous benefits, including increased efficiency, improved decision-making, and enhanced productivity. However, it is important to consider the potential challenges as well. Organizations must ensure that their systems are fair, transparent, and accountable. By addressing these concerns, we can harness the full potential of this technology. Ultimately, the future of artificial intelligence depends on our ability to use it responsibly. In addition, effective implementation requires collaboration between stakeholders across multiple sectors. Governments, businesses, and educational institutions all play a crucial role in shaping policies that promote innovation while protecting individual rights. Furthermore, ongoing research and continuous evaluation are essential to ensure that these systems remain safe and beneficial over time.", "creator_id": "writer_042"}'
 ```
 
 ```json
-
+{
+    "confidence": 0.7498,
+    "content_id": "a93c39a5b5b6",
+    "guess": "ai",
+    "label": "Our system thinks this piece was likely written with an AI tool. This is an automated guess, not a final decision, and it can be wrong. If you wrote this yourself, you can appeal and a person will review it.",
+    "model_score": 0.8605,
+    "status": "decided",
+    "style_score": 0.5838
+}
 ```
 
 **An appeal**
 
 ```bash
-$ curl -X POST http://127.0.0.1:5000/appeal \
+$ curl -X POST http://127.0.0.1:5001/appeal \
   -H "Content-Type: application/json" \
-  -d '{"content_id": "...", "reasoning": "..."}'
+  -d '{"content_id": "a93c39a5b5b6", "reasoning": "I wrote this myself for my policy class. I write in a formal style because that is how we were taught to write essays."}'
 ```
 
 ```json
-
+{
+    "content_id": "a93c39a5b5b6",
+    "message": "Thanks — your appeal is recorded. A person will review this piece, and the automated label won't be treated as final while they do.",
+    "original_guess": "ai",
+    "status": "under_review"
+}
 ```
 
 **What the log shows afterwards**
 
 ```bash
-$ curl "http://127.0.0.1:5000/log?limit=3"
+$ curl "http://127.0.0.1:5001/log?limit=2"
 ```
 
 ```json
+{
+    "count": 2,
+    "entries": [
+        {
+            "combined_score": 0.7498,
+            "content_id": "a93c39a5b5b6",
+            "creator_id": "writer_042",
+            "guess": "ai",
+            "label": "Our system thinks this piece was likely written with an AI tool. This is an automated guess, not a final decision, and it can be wrong. If you wrote this yourself, you can appeal and a person will review it.",
+            "model_score": 0.8605,
+            "status": "decided",
+            "style_score": 0.5838,
+            "timestamp": "2026-11-01T23:04:14+00:00",
+            "word_count": 122
+        },
+        {
+            "content_id": "a93c39a5b5b6",
+            "creator_id": "writer_042",
+            "event": "appeal",
+            "reasoning": "I wrote this myself for my policy class. I write in a formal style because that is how we were taught to write essays.",
+            "status": "under_review",
+            "timestamp": "2026-11-01T23:04:14+00:00"
+        }
+    ]
+}
+```
 
+**Bad input, for the record:**
+
+```text
+{"creator_id":"x"}                          -> 400 {"error":"missing_text", ...}
+{"text":"   ","creator_id":"x"}             -> 400 {"error":"missing_text", ...}
+{"text":"too short","creator_id":"x"}       -> 400 {"error":"text_too_short", ...}
+{"text":"hello there friend ... ok"}        -> 400 {"error":"missing_creator_id", ...}
+[1,2]                                       -> 400 {"error":"body_not_json_object", ...}
+not json                                    -> 400 {"error":"body_not_json_object", ...}
+25,000-character text                       -> 413 {"error":"text_too_long", ...}
+/appeal {"content_id":"nope", ...}          -> 404 {"error":"unknown_content_id", ...}
+/appeal {"content_id":"nope"}               -> 400 {"error":"missing_reasoning", ...}
 ```
 
 ---
 
 ## How I Used AI
 
+<!-- TODO (Omar): fill in "What I changed" yourself — the grader wants YOUR
+     edits, and only you know what you'd change. -->
+
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* I gave Claude Code the full project brief and asked it to
+  build the service: the style signal, the combining rule, both routes.
+- *What came back:* A working `/submit` and `/appeal`, a style signal built from
+  sentence-length spread, MATTR and expressive punctuation, and a calibration
+  table showing the plainly-written human paragraph scoring 0.887 on signal one,
+  as AI-like as real AI text.
+- *What I changed:* TODO
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* TODO
+- *What came back:* TODO
+- *What I changed:* TODO
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
