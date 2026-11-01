@@ -42,63 +42,72 @@ Two things worth knowing before you pick numbers:
   a **miss**.
 
 ---
-## 1.
+## 1. My own writing is rarely called AI
 
-<!-- Your criterion. It must name a number. -->
+I submit 10 pieces of writing I wrote myself (each 100+ words) to `POST /submit`.
+**At most 1 of the 10** comes back with `"guess": "ai"`.
 
-
-
-**Why this target:**
-
-
-
----
-
-## 2.
-
-<!-- Your criterion. -->
-
-
-
-**Why this target:**
-
-
+**Why this target:** On a writing site, wrongly telling a real writer their work
+is AI costs them far more than letting some AI text through costs the site.
+Detection is imperfect, so 0 isn't realistic, but more than 1 in 10 means one
+in every handful of honest writers gets accused. My model signal already scored
+a plain human paragraph at 0.887, as high as real AI text, so this is a real
+risk and not a formality.
 
 ---
 
-## 3.
+## 2. Bad input never crashes the service
 
-<!-- Your criterion. -->
+I send `POST /submit` each of: a body with no `text`, `text` that is an empty or
+whitespace-only string, `text` under 10 words, `text` over 20,000 characters,
+and a body that isn't a JSON object. **Every one returns a 4xx (400, or 413 for
+the oversized text) with a JSON `error` field, and none returns a 500.** Each
+refusal also appears in `GET /log` as a `rejected` entry.
 
-
-
-**Why this target:**
-
-
-
----
-
-## 4.
-
-<!-- Your criterion. -->
-
-
-
-**Why this target:**
-
-
+**Why this target:** Malformed input is the most common real failure, and next
+unit's attack set will send it on purpose. A 500 tells the writer nothing, and a
+refusal that leaves no log entry is an attack I could never see afterwards.
 
 ---
 
-## 5.
+## 3. Appeals are recorded
 
-<!-- Your criterion. -->
+I submit 10 texts, then send `POST /appeal` with each returned `content_id` and a
+reason. **In at least 9 of the 10**, the response says `"status": "under_review"`
+AND `GET /log` shows an appeal entry for that `content_id` after the original
+decision, with the original decision entry unchanged.
 
+**Why this target:** The appeal is the only thing a wrongly accused writer can
+do about my system's mistake, so it has to work. If an appeal is lost, that
+writer stays labeled with no record they ever objected.
 
+---
 
-**Why this target:**
+## 4. Clear AI and clear human text score far apart
 
+I submit 5 texts I'm confident are AI-generated and 5 I'm confident are
+human-written (each 100+ words). **The average `confidence` of the AI group is
+at least 0.40 higher than the average of the human group.**
 
+**Why this target:** My bands are human below 0.40 and AI at 0.70 or above, so
+0.30 is the bare minimum to get from one band to the other. A 0.40 gap means
+clear cases sit comfortably inside their bands instead of at the edges, leaving
+the unsure band for genuinely uncertain text.
+
+---
+
+## 5. Short, plain human writing isn't accused
+
+I submit 5 pieces of plainly written human text, each under 100 words, with
+short sentences, common words and little punctuation. **At most 1 of the 5**
+comes back with `"guess": "ai"`.
+
+**Why this target:** These are the writers both of my signals are biased
+against: second-language writers, younger writers, anyone writing simply.
+My combining rule caps text under 100 words below the AI threshold (0.69) for
+exactly this reason, so this checks whether that cap actually protects them. I
+allow 1 because the model signal can score the same text differently between
+trials.
 
 ---
 

@@ -326,9 +326,6 @@ not json                                    -> 400 {"error":"body_not_json_objec
 
 ## How I Used AI
 
-<!-- TODO (Omar): fill in "What I changed" yourself — the grader wants YOUR
-     edits, and only you know what you'd change. -->
-
 **Moment 1**
 
 - *What I asked for:* I gave Claude Code the full project brief and asked it to
@@ -341,9 +338,14 @@ not json                                    -> 400 {"error":"body_not_json_objec
 
 **Moment 2**
 
-- *What I asked for:* TODO
-- *What came back:* TODO
-- *What I changed:* TODO
+- *What I asked for:* I asked Claude to write my five acceptance criteria for me.
+- *What came back:* It declined to write them, because the brief says criteria
+  must be my own. Instead it set out options for each target with what each
+  choice would mean (for example 0, 1 or 2 false positives out of 10, and a
+  score gap of 0.30, 0.40 or 0.50).
+- *What I changed:* I chose the targets myself: at most 1 of 10 of my own pieces
+  called AI, 9 of 10 appeals recorded, a 0.40 gap between clear AI and clear
+  human text, and at most 1 of 5 short plain pieces called AI.
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
