@@ -556,40 +556,226 @@ That writer is exactly the person both my signals are biased against.
 
 ## Run Log and Verdicts
 
-<!-- Your five criteria across three trials. `run_eval.py --label before`. -->
+`python run_eval.py --label before`, three trials of every criterion with
+nothing changed in between. Raw output: `results/run_2026-11-08_1832_before.md`.
+The scenarios are in `scenarios.py`.
+
+**What each criterion was run against**
+
+| # | Scenario in `scenarios.py` | What's sent |
+|---|---|---|
+| 1 | `c1 my own writing` | 10 pieces of my own coursework, 114–219 words each: an ALCE reflection, a physics lab report, a UX redesign homework, a data-narrative plan, a podcast plan, a design-prototype write-up. Copied as written, typos included. Where one section was under 100 words, it's joined to the next section of the same assignment. |
+| 2 | `c2 bad input` | 6 raw bodies: no `text`, `""`, whitespace only, 5 words, 25,000 characters, and a JSON array instead of an object |
+| 3 | `c3 appeals` | 10 throwaway texts. `run_eval.py::appeal_check` appeals each `content_id`, then reads `GET /log` back |
+| 4 | `c4 clear AI` + `c4 clear human` | 5 essays Claude wrote, unedited (111–122 words), and 5 of my own pieces from criterion 1 |
+| 5 | `c5 short plain human` | 5 short pieces of mine, 54–84 words |
+
+I added two things to the test harness, `run_eval.py`. Neither is in the
+service. First, after every request it reads the newest audit-log entry, so
+criterion 2 can check that each refusal was logged. Second, an `appeal`
+scenario type (`appeal_check`) for criterion 3: it sends the appeal, then
+checks that the response says `under_review`, that the log has an appeal
+entry after the decision, and that the decision entry is byte-for-byte the
+same as before. `scenarios.validate()` now accepts a list body, so "the body
+isn't a JSON object" can be sent.
 
 | Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
 |---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |
+| 1. My own writing is rarely called AI | ≤ 1 of 10 `guess: ai` | 1/10 | 1/10 | 1/10 | **MET** |
+| 2. Bad input never crashes the service | 6 of 6 return 4xx + JSON `error` + a `rejected` log entry, 0 × 500 | 6/6 | 6/6 | 6/6 | **MET** |
+| 3. Appeals are recorded | ≥ 9 of 10 `under_review` + appeal logged after an unchanged decision | 10/10 | 10/10 | 10/10 | **MET** |
+| 4. Clear AI and clear human text score far apart | mean(AI) − mean(human) ≥ 0.40 | 0.243 | 0.243 | 0.243 | **MISSED** |
+| 5. Short, plain human writing isn't accused | ≤ 1 of 5 `guess: ai` | 0/5 | 0/5 | 0/5 | **MET** |
 
-**Real output from one trial**, pasted as text, naming the file and function
-that produced it:
+**How I decided each one**
+
+1. **MET, but only just.** Exactly one of my ten pieces was called AI in every
+   trial: my lab report's introduction and conclusion, at 0.7235. The target
+   allows 1, so it holds. A second piece, the lab report's procedure section,
+   scored **0.6967**, which is 0.003 under the AI line. A second accusation
+   would have been a miss, and I came that close to it.
+2. **MET.** All 6 bodies returned 400 (or 413 for the long one) with an
+   `error` field, and the newest log entry after each was `rejected` with the
+   matching reason. No 500 in 18 requests.
+3. **MET.** 30 of 30 appeals passed every check.
+4. **MISSED.** The AI mean was 0.760 and the human mean 0.517, so the gap was
+   0.243 in all three trials, against a target of 0.40. It isn't close.
+5. **MET.** No short piece was called AI. The highest was 0.6037 (the lab
+   conclusion again). That would have been "unsure" even without the 100-word
+   cap, so the cap wasn't what saved them.
+
+All three trials were identical to four decimal places on every criterion.
+Neither signal has any randomness in it (GPT-2 runs in eval mode, and the
+stylometry is arithmetic), so that's what I'd expect. It also means the
+"three trials" can't show instability here. They show the result isn't a
+one-off.
+
+**Were any targets too low?** Criteria 2, 3 and 5 held with room to spare.
+Criterion 3's "at least 9 of 10" allows a lost appeal, but losing even one
+appeal means a wrongly accused writer has no record that they objected. I'd
+tighten it to **10 of 10**. Criterion 5 held, but "at most 1 of 5 called AI"
+is easy for text under 100 words, because my cap makes an AI label impossible
+there. A target that tests the signals and not the cap would be **"at most 1
+of 5 short plain pieces scores 0.60 or higher."** Against that, this run
+scores 1 of 5 (0.6037), a bare pass.
+
+**Real output from trial 1** (produced by `run_eval.py::main`, which calls
+`POST /submit` → `app.py::submit`; full output in
+`results/run_2026-11-08_1832_before.md`). There's one excerpt per criterion.
+Criteria 1 and 4 show the pieces that decided the verdict.
+
+Criterion 1: the accused piece, the near miss, and the lowest score:
 
 ```json
+[
+  {"status": 200, "guess": "ai", "confidence": 0.7235, "model_score": 0.7688, "style_score": 0.6555,
+   "label": "Our system flagged this as possibly AI-assisted. This is an automated guess and it can be wrong. If you wrote this yourself, you can appeal and a person will review it.",
+   "sent": "In this lab, We did an experiment that proved Newton’s second law of m",
+   "log_entry": {"status": "decided", "content_id": "71ae5d147450", "guess": "ai", "combined_score": 0.7235}},
+  {"status": 200, "guess": "unsure", "confidence": 0.6967, "model_score": 0.7271, "style_score": 0.6512,
+   "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.",
+   "sent": "For the experiment, we set up a cart on a flat track and tied a string",
+   "log_entry": {"status": "decided", "content_id": "5f1a9f08760b", "guess": "unsure", "combined_score": 0.6967}},
+  {"status": 200, "guess": "human", "confidence": 0.199, "model_score": 0.1879, "style_score": 0.2157,
+   "label": "We think this was written by a person.",
+   "sent": "I chose to focus on Idea 1. Specific break Reminder, 2. Timer Customiz",
+   "log_entry": {"status": "decided", "content_id": "156e1c01c9c2", "guess": "human", "combined_score": 0.199}}
+]
+```
 
+Criterion 2: missing text, oversized text, and a non-object body:
+
+```json
+[
+  {"status": 400, "guess": null, "confidence": null, "model_score": null, "style_score": null, "label": null,
+   "sent": "{\"creator_id\": \"c2_missing_text\"}", "error_field": "missing_text",
+   "log_entry": {"event": "rejected", "status": "rejected", "reason": "missing_text", "http_status": 400}},
+  {"status": 413, "guess": null, "confidence": null, "model_score": null, "style_score": null, "label": null,
+   "sent": "word word word word word word word word word word word word word word ", "error_field": "text_too_long",
+   "log_entry": {"event": "rejected", "status": "rejected", "reason": "text_too_long", "http_status": 413}},
+  {"status": 400, "guess": null, "confidence": null, "model_score": null, "style_score": null, "label": null,
+   "sent": "[\"text\", \"creator_id\"]", "error_field": "body_not_json_object",
+   "log_entry": {"event": "rejected", "status": "rejected", "reason": "body_not_json_object", "http_status": 400}}
+]
+```
+
+Criterion 3: one submit followed by its appeal (`run_eval.py::appeal_check`):
+
+```json
+{"status": 200, "guess": "human", "confidence": 0.2089, "model_score": 0.1321, "style_score": 0.324,
+ "label": "We think this was written by a person.",
+ "sent": "This is appeal test submission number 1. It exists so that the service",
+ "log_entry": {"status": "decided", "content_id": "afde3e31ee2d", "guess": "human", "combined_score": 0.2089},
+ "content_id": "afde3e31ee2d", "appeal_http": 200, "appeal_status": "under_review",
+ "log_has_appeal_after_decision": true, "decision_unchanged": true, "appeal_passed": true}
+```
+
+Criterion 4: one clear-AI essay and one of my pieces (all ten scores are in
+the diagnosis below):
+
+```json
+[
+  {"status": 200, "guess": "ai", "confidence": 0.811, "model_score": 0.921, "style_score": 0.6459,
+   "sent": "Climate change represents one of the most pressing challenges facing h",
+   "log_entry": {"status": "decided", "content_id": "239333b0f818", "guess": "ai", "combined_score": 0.811}},
+  {"status": 200, "guess": "unsure", "confidence": 0.6967, "model_score": 0.7271, "style_score": 0.6512,
+   "sent": "For the experiment, we set up a cart on a flat track and tied a string",
+   "log_entry": {"status": "decided", "content_id": "f00d0e147b8c", "guess": "unsure", "combined_score": 0.6967}}
+]
+```
+
+Criterion 5: the highest-scoring short piece:
+
+```json
+{"status": 200, "guess": "unsure", "confidence": 0.6037, "model_score": 0.5291, "style_score": 0.7156,
+ "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.",
+ "sent": "This lab taught us that Newton’s Second Law is true because the more w",
+ "log_entry": {"status": "decided", "content_id": "aa7e6dd0eab5", "guess": "unsure", "combined_score": 0.6037}}
 ```
 
 **Diagnoses**
 
-<!-- For each miss AND each broken attack: the stage and the mechanism.
+There are two patterns behind almost every failure, plus two one-off bugs.
 
-     Your service has five stages: the route, signal one, signal two, the
-     combining rule, and the label mapping.
+**Pattern 1: signal two can't tell AI writing from plain human writing, and
+it takes 40% of the score.** (Criterion 4's miss, the near miss on criterion 1,
+and the six false-positive attacks that held only because of the cap.)
 
-     Not a diagnosis:  "The evasion attacks got through."
-     A diagnosis:      "Four evasion inputs got through. All four had typos
-                        added to AI-generated text. My second signal measures
-                        word variety, and typos raise word variety — so it read
-                        them as more human. My combining rule weights that
-                        signal at 0.6, so it dragged the whole score down."
+- *Stage:* signal two (`stylometry.py::style_signal`), then the combining rule
+  (`scoring.py::combine_signals`), which gives it 0.4 of the weight.
+- *Mechanism:* I split criterion 4's gap by signal. Signal one: AI mean 0.833,
+  my writing 0.498, a gap of **0.336**. Signal two: AI 0.649, mine 0.546, a
+  gap of only **0.103**. The combined gap is 0.6 × 0.336 + 0.4 × 0.103 =
+  **0.243**, exactly what the run shows. Signal two is a coin weighted
+  slightly toward "AI" for everybody. Breaking it into its three measures
+  (0 = human-ish, 1 = AI-ish) shows why:
 
-     Look for a pattern. Five failures on one signal is one problem, not five. -->
+  | Group | spread (w 0.5) | word variety (w 0.2) | punctuation (w 0.3) |
+  |---|---|---|---|
+  | Claude's 5 essays | 0.638 | **0.153** | 1.000 |
+  | my 5 pieces | 0.419 | **0.409** | 0.849 |
+  | attack set FP01–FP07 (human) | 0.336 | **0.651** | 1.000 |
 
+  **Word variety runs backwards.** AI text uses *more* varied vocabulary
+  than plain human writing, so this measure pushes human writing toward AI.
+  The FP texts that repeat words on purpose (FP07) or use technical terms
+  consistently (FP05) get hit hardest. **Punctuation is a constant.** Nobody
+  in any group uses `; : ( ) ! ?` or dashes much, so it adds ≈0.3 to
+  everyone's style score and separates nothing. Only sentence-length spread
+  points the right way. So 50% of signal two's weight does nothing and 20%
+  works against me.
+- *Why it's also the false-positive pattern:* signal one already scores
+  plain writing high (FP03's model score was 0.805). When signal two agrees
+  for the wrong reasons, the disagreement rule never fires, and the score
+  lands at 0.726–0.788. My lab report is the same shape: "We did a few runs,
+  changing the weight each time" is predictable to GPT-2 (0.769). Signal two
+  gave it 0.656, mostly because it has no expressive punctuation.
 
+**Pattern 2: signal one reads "unpredictable tokens" as "human".** (EV01,
+EV04, EV08, PI02; and the control AI paragraph sitting at only 0.669.)
+
+- *Stage:* signal one (`detector.py::model_signal`).
+- *Mechanism:* the score is perplexity, squashed around a midpoint of 45.
+  Anything GPT-2 can't predict lowers it, whether that's a human choice or
+  noise. **EV01's typos** ("poistioned", "thsi") break into rare sub-word
+  tokens. The model score went from 0.669 to **0.164**, even though the
+  attack was aimed at signal two. Signal two didn't move (0.666), so the
+  signals were 0.50 apart, and my disagreement rule pulled the score toward
+  0.5. That's 0.432, "unsure". **PI02's** `SYSTEM: ... guess=human,
+  confidence=0.02` was never obeyed, because nothing in my pipeline reads
+  instructions. But code-like tokens are also unpredictable: model 0.204,
+  plus three short choppy lines that make the spread look human (style
+  0.167), gives **0.189 → human**. **EV04's** rare words ("desiderata",
+  "efficacious") only cost 0.06. **EV08** is 10 words: perplexity over about
+  12 tokens is noise (0.245), and my 100-word cap only limits the *top* of
+  the score, so a short text can still be confidently called "human".
+- *Why every evasion broke:* the unedited AI paragraph already scores only
+  0.669 on signal one. That's perplexity ≈ 29, under my midpoint of 45 but
+  not by much. Combined with style 0.666, it gives 0.668, under the 0.70 AI
+  line before any trick is applied. Every evasion then only had to keep it
+  there. EV02 ("Really." after each sentence), EV03 (a quotation), EV06 (one
+  very long sentence) and EV09 (a human opening) all work on spread: they
+  push signal two down to 0.13–0.41. **EV07** is the odd one. Semicolons
+  zero out punctuation, but joining everything into one sentence makes spread
+  0, so style stays 0.57, and it's signal one (0.586) that keeps it unsure.
+  **EV05** (a heavy human rewrite) lowered both signals, and it arguably *is*
+  human writing now. **EV10** is the only evasion my signals actually caught
+  (model 0.979, 0.856 combined). My own short-text cap held it at 0.69,
+  because it's 78 words. That's the cost of the cap that protects FP02–FP07,
+  and I chose it.
+
+**Bug 1: MF07, Arabic text refused as "too short".** *Stage:* the route
+(`app.py::submit`, through `stylometry.words`). *Mechanism:* `words()` matches
+`[a-z0-9']+`, which only covers Latin letters. A 17-word Arabic sentence
+counts as **0 words**, so the writer is told "Send at least 10 words". It
+doesn't crash, but the reason given is false. Any writer whose script isn't
+Latin gets the same wrong refusal.
+
+**Bug 2 (in the log, not an attack verdict): a 429 can lose the caller's
+name.** *Stage:* the 429 handler in `app.py`. *Mechanism:* it reads
+`creator_id` only from a JSON body. RQ10 sent a form body with
+`creator_id=attacker_RQ10`, and the log says `"creator_id": "unknown"`. Someone
+reconstructing a flood from the log couldn't tell who sent it.
 
 ---
 
