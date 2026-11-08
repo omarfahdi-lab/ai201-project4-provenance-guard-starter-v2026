@@ -369,6 +369,25 @@ are where I made the call.
   called AI, 9 of 10 appeals recorded, a 0.40 gap between clear AI and clear
   human text, and at most 1 of 5 short plain pieces called AI.
 
+**Unit 8: how the testing was done**
+
+- *What I asked for:* I gave Claude Code the Unit 8 brief and rubric and asked
+  it to carry out the milestones: turn on the limiter, run the attack set,
+  build the scenarios, write the verdicts and diagnoses, and make and
+  measure one improvement.
+- *What came back:* It chose the 5/minute and 50/day limits and ran every
+  run in `results/`. It extended `run_eval.py` with an appeal check and a
+  log check. It picked the improvement after re-scoring three versions of
+  signal two on the before-run texts. It wrote the analysis in this README.
+  It would not write "my own writing" for criterion 1, because AI text there
+  would test AI text. Instead it pulled passages from my own coursework
+  files and left out documents that looked AI-assisted: one has a ChatGPT
+  citation artifact, two say in their AI-use statements that Claude helped
+  draft them, and one has 25 em dashes.
+- *What I changed:* ⚠️ **FILL IN** what you checked or changed after
+  reading this: which passages you confirmed are really yours, and whether
+  you agree with the verdicts and the trade above.
+
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
 ---
@@ -928,16 +947,32 @@ the target. No on criterion 4, and it cost something on the AI side.**
 
 ## What's Still Broken
 
-<!-- For each attack still getting through and each criterion still missed:
-     what you'd do, and why you stopped. -->
+Everything below is still true after the improvement. I stopped at one
+change because the unit allows one: a second change in the same run would
+make the before and after impossible to compare. Each item says what I'd do
+next.
 
+| What's still broken | Stage | What I'd do | Why I stopped / what it would cost |
+|---|---|---|---|
+| **All 10 evasions.** The unedited AI paragraph scores 0.669 on signal one, so with no trick at all it combines to under 0.70 | signal one + label mapping | Replace or add to signal one with something that isn't raw predictability, e.g. compare perplexity under two different models (text a model *wrote* is predictable to both; plain human text usually isn't predictable to both in the same way) | The cheap fixes (move the 45 midpoint, lower the 0.70 line) make **FP02–FP07 and my lab report accused again**, because signal one scores plain human writing *higher* than this AI text (FP03 0.805 vs 0.669). A better signal is a project, not a tweak |
+| **EV01, PI02: unpredictable tokens drag signal one down** (typos 0.669 → 0.164; `guess=human` → 0.204) | signal one | Score perplexity on a trimmed mean, dropping the 10% most surprising tokens, so a handful of misspellings or code-like tokens can't swing it | A second change. It would also make signal one *harsher* on real human writing, whose surprising words are exactly what that trim removes |
+| **EV08: 10 words called "human"** | combining rule | Make the short-text cap symmetric: under 100 words the score is clamped to 0.40–0.69, so short text can only ever be "unsure" | This is the next change I'd make, and it's the cheapest. Cost: a genuine short human piece (FP-style) can never get "we think a person wrote this" either, only "unsure" |
+| **EV10: repeated AI text held at 0.69** | combining rule (my cap) | Nothing. This is the cap working as designed | The same cap is what kept FP02–FP07 from being accused in the before run. I'd rather miss 78 words of AI than accuse a 78-word human |
+| **PI01, PI02: style 0.000 after the fix** | signal two (new) | Add back a second measure that actually separates the groups, not word variety. Something like the share of function words, or sentence-*opening* variety | It's the measured cost of my one change. Spread alone is a single knob, and mixing short and long sentences turns it to zero |
+| **MF07: Arabic counted as 0 words** | route (`stylometry.words`) | Count words with a Unicode-aware pattern (`\w+`), and refuse non-English text with an honest message ("we can only check English text") instead of "send at least 10 words" | Not the change my diagnosis pointed at. It's a small, safe route fix, and it's what I'd do right after the symmetric cap |
+| **429 log entry says `creator_id: unknown` for form bodies** | 429 handler in `app.py` | Read `request.form` as well as JSON when logging the rejection | Doesn't change any verdict, but someone reconstructing a flood can't see who sent it |
+| **Rate limit keyed on a `creator_id` the caller chooses** | route / limiter | Add a second, looser limit per IP address (say 30/min) on top of the per-creator one, or key on a logged-in account | Every `attacks.csv` row used a fresh id and was never limited. A shared school network would hit a per-IP limit, which is why it must be looser |
+| **Criterion 4: gap 0.289, target 0.40, MISSED** | signal one (ceiling) | The same as the evasion fix: a stronger first signal. Signal one alone separates the groups by only 0.336, so no weighting of these two signals can reach 0.40 | I'm not lowering the target. It's measurable, and I missed it. The honest finding is that GPT-2 perplexity can't separate my plain coursework from AI essays by that much |
 
-
-**The trade I'd make if this ran for real:**
-
-<!-- Two sentences. Fewer wrong accusations means more AI text getting through.
-     Say which way you'd go and WHO PAYS FOR IT. -->
-
+**The trade I'd make if this ran for real:** I'd keep choosing fewer
+wrong accusations: a wide "unsure" band, a cap on short text, and signals
+that are only allowed to agree for real reasons. That means more AI text gets
+through labelled "unsure". The people who pay are the site, and honest
+writers whose work sits next to undetected AI text. I think that's still the
+right side of the trade. The people this system would otherwise accuse
+(FP03's careful second-language writer, my own plain lab reports) are the
+ones least able to argue back, and an accusation costs them far more than
+one missed AI post costs anyone else.
 
 
 <!-- ═════════════════════════════════════════════════════════════════════
