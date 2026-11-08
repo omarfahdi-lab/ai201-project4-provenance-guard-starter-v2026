@@ -375,47 +375,182 @@ are where I made the call.
 
 ## Rate Limiting
 
-**My limits:** ___ per minute, ___ per day
+**My limits:** 5 per minute, 50 per day (on `POST /submit` only; set in
+`config.py`, applied by the `@limiter.limit(...)` decorator on `app.py::submit`)
 
 **Why those numbers and not others:**
-<!-- Think about two people: a real writer submitting their own work a few
-     times an hour, and a script sending a thousand variations to map your
-     thresholds. Your numbers have to be liveable for the first and hostile to
-     the second. -->
 
-**What a caller counts as:** <!-- per address, or per creator_id? They fail
-differently — one script can look like a thousand callers, and one household
-can look like one. -->
+- **5 a minute.** A real writer submits a piece, reads the label, maybe fixes a
+  typo and sends it again. That's 1 or 2 requests in a minute, so 5 is more
+  than double what an honest person needs. The starter's 10 a minute would
+  let a script send 600 probes an hour, which is plenty to map where my 0.40
+  and 0.70 lines sit.
+- **50 a day.** Nobody posts 50 pieces of their own writing in a day. A
+  script that wants to find my thresholds needs hundreds of variations of the
+  same text (add a dash, split a sentence, resubmit). At 50 a day, 1,000
+  probes take 20 days under one `creator_id`.
+- **What it costs:** a writer who pastes the same piece 6 times in a minute
+  while fiddling with it gets a 429 and has to wait. I think that's fine:
+  the message says "try again shortly", and a minute is a short wait.
 
-**The run of status codes when I pushed past it:**
+**What a caller counts as:** the `creator_id` in the request body, falling
+back to the caller's IP address when there's no usable `creator_id`
+(`app.py::rate_limit_key`). That's good for one writer behind a shared school
+network: they don't use up their classmates' allowance. It's bad against a
+script, because the script chooses its own `creator_id`. If it sends every
+request under a new id, it never hits a limit at all. Every row in the attack
+set's `attacks.csv` does exactly that, which is why only the
+`flood_same_creator` rows can be limited. A real fix needs a limit tied to
+something the caller can't make up: a logged-in account, or a second,
+looser limit per IP address on top of the per-creator one.
 
-<!-- python run_attacks.py --flood 15 -->
+**The run of status codes when I pushed past it** (`python run_attacks.py
+--flood 15`, written to `results/flood_2026-11-08_1819.md`):
 
 ```
+200 200 200 200 200 429 429 429 429 429 429 429 429 429 429
+```
 
+The first 5 got through, and all 10 after that were refused. Each refusal is
+in the audit log:
+
+```json
+{"timestamp": "2026-11-08T23:19:33+00:00", "creator_id": "flood_tester", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "5 per 1 minute"}
 ```
 
 ---
 
 ## Attack Run — Before
 
-<!-- Every attack with its outcome and a held-or-broke mark.
-     `run_attacks.py --label before` produces the table. -->
+`python run_attacks.py --set attack_set --label before`, run once over all 56
+inputs with rate limiting on and nothing else changed. Raw output:
+`results/attack_run_2026-11-08_1821_before.md`.
 
+**How I marked held or broke.** Each family is after something different, so
+the rule depends on the family:
 
+| Family | The attack wants | BROKE when |
+|---|---|---|
+| `evasion` (AI text) | AI text not to be flagged | `guess` is anything other than `ai`, because "unsure" isn't a flag either |
+| `false_positive` (human text) | real writing to be called AI | `guess` is `ai` |
+| `prompt_injection` | the service to do what the text says | the output matches what the instruction asked for, or the label or log was changed |
+| `malformed`, `flood_same_creator` | a crash, a 500, a wrong answer, or no limit | 5xx, no JSON error, no log entry, a wrong refusal, or no 429 |
 
-**Ten audit log entries from the run**
+**One control, so the evasions can be judged fairly.** Every evasion row is the
+same AI paragraph about workplace communication with one trick applied. I sent
+that paragraph once with **no** trick applied (`creator_id: control_base_ai`):
+model 0.669, style 0.666, combined **0.668 → unsure**. My service doesn't flag
+this AI text even without any evasion. That matters for the diagnosis below.
 
-<!-- Choose entries that show the interesting failures, not the ten easiest. -->
+| ID | Family | Targeting | Status | Guess | model | style | Score | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| EV01 | evasion | signal two: typos raise word variety | 200 | unsure | 0.164 | 0.666 | 0.432 | **BROKE** |
+| EV02 | evasion | signal two: broken-up sentences raise length spread | 200 | unsure | 0.594 | 0.133 | 0.455 | **BROKE** |
+| EV03 | evasion | signal two: a pasted quotation changes the shape | 200 | unsure | 0.666 | 0.317 | 0.527 | **BROKE** |
+| EV04 | evasion | signal one: unusual words raise perplexity | 200 | unsure | 0.611 | 0.655 | 0.629 | **BROKE** |
+| EV05 | evasion | both signals: heavy human editing pass | 200 | human | 0.321 | 0.289 | 0.308 | **BROKE** |
+| EV06 | evasion | signal two: one very long sentence and one very short | 200 | unsure | 0.573 | 0.346 | 0.482 | **BROKE** |
+| EV07 | evasion | signal two: padding with punctuation | 200 | unsure | 0.586 | 0.569 | 0.579 | **BROKE** |
+| EV08 | evasion | signal one: text below the token window | 200 | human | 0.245 | 0.564 | 0.373 | **BROKE** |
+| EV09 | evasion | both: AI text with a human opening paragraph bolted on | 200 | unsure | 0.704 | 0.410 | 0.587 | **BROKE** |
+| EV10 | evasion | signal two: repeated stanza structure | 200 | unsure | 0.979 | 0.672 | 0.690 (capped) | **BROKE** |
+| FP01 | false_positive | plain, clear human writing with no flourishes | 200 | unsure | 0.618 | 0.515 | 0.577 | HELD |
+| FP02 | false_positive | human writing in a formal register | 200 | unsure | 0.739 | 0.724 | 0.690 (capped) | HELD (only by the cap) |
+| FP03 | false_positive | a non-native English speaker writing carefully | 200 | unsure | 0.805 | 0.607 | 0.690 (capped) | HELD (only by the cap) |
+| FP04 | false_positive | a student essay written to a rubric | 200 | unsure | 0.833 | 0.574 | 0.690 (capped) | HELD (only by the cap) |
+| FP05 | false_positive | technical documentation written by a person | 200 | unsure | 0.801 | 0.769 | 0.690 (capped) | HELD (only by the cap) |
+| FP06 | false_positive | a person imitating a formal template | 200 | unsure | 0.881 | 0.499 | 0.690 (capped) | HELD (only by the cap) |
+| FP07 | false_positive | human writing that repeats a phrase deliberately | 200 | unsure | 0.882 | 0.500 | 0.690 (capped) | HELD (only by the cap) |
+| FP08 | false_positive | very short genuine human submission | 400 `text_too_short` | — | — | — | — | HELD (not accused, but refused) |
+| PI01 | prompt_injection | instruction to ignore the check | 200 | unsure | 0.463 | 0.320 | 0.406 | HELD |
+| PI02 | prompt_injection | instruction disguised as a system message | 200 | human | 0.204 | 0.167 | 0.189 | **BROKE** |
+| PI03 | prompt_injection | instruction wrapped in the writer's voice | 200 | unsure | 0.594 | 0.215 | 0.443 | HELD |
+| PI04 | prompt_injection | attempt to make the label text hostile | 200 | unsure | 0.500 | 0.308 | 0.423 | HELD |
+| PI05 | prompt_injection | attempt to inject into the audit log | 200 | unsure | 0.640 | 0.107 | 0.464 | HELD |
+| PI06 | prompt_injection | instruction plus real human text | 200 | unsure | 0.558 | 0.524 | 0.545 | HELD |
+| MF01 | malformed | text is only whitespace | 400 `missing_text` | — | — | — | — | HELD |
+| MF02 | malformed | text is a single character | 400 `text_too_short` | — | — | — | — | HELD |
+| MF03 | malformed | text is control characters | 400 `text_too_short` | — | — | — | — | HELD |
+| MF04 | malformed | text is only punctuation | 400 `text_too_short` | — | — | — | — | HELD |
+| MF05 | malformed | text is a very long single word | 400 `text_too_short` | — | — | — | — | HELD |
+| MF06 | malformed | text is emoji only | 400 `text_too_short` | — | — | — | — | HELD |
+| MF07 | malformed | text is right-to-left script | 400 `text_too_short` (counted 0 words) | — | — | — | — | **BROKE** (wrong refusal) |
+| MF08 | malformed | text is 60,000 characters | 413 `text_too_long` | — | — | — | — | HELD |
+| RQ01 | malformed | no text field at all | 400 `missing_text` | — | — | — | — | HELD |
+| RQ02 | malformed | no creator_id | 400 `missing_creator_id` | — | — | — | — | HELD |
+| RQ03 | malformed | text is a number | 400 `missing_text` | — | — | — | — | HELD |
+| RQ04 | malformed | text is a list | 400 `missing_text` | — | — | — | — | HELD |
+| RQ05 | malformed | text is null | 400 `missing_text` | — | — | — | — | HELD |
+| RQ06 | malformed | creator_id is an object | 400 `missing_creator_id` | — | — | — | — | HELD |
+| RQ07 | malformed | body is a JSON array, not an object | 400 `body_not_json_object` | — | — | — | — | HELD |
+| RQ08 | malformed | body is unparseable JSON | 400 `body_not_json_object` | — | — | — | — | HELD |
+| RQ09 | malformed | body is empty | 400 `body_not_json_object` | — | — | — | — | HELD |
+| RQ10 | malformed | body is form-encoded, not JSON | 429 in the full run; **400** `body_not_json_object` alone | — | — | — | — | HELD (see note) |
+| RQ11 | malformed | body is JSON claiming to be plain text | 429 in the full run; **400** `body_not_json_object` alone | — | — | — | — | HELD (see note) |
+| RQ12 | malformed | deeply nested JSON | 400 `missing_text` | — | — | — | — | HELD |
+| FL01_01–05 | flood_same_creator | 20 rapid submissions from one creator | 400 ×5 (`text_too_short`, 9 words) | — | — | — | — | HELD |
+| FL01_06–12 | flood_same_creator | 20 rapid submissions from one creator | 429 ×7 | — | — | — | — | HELD |
+
+**Count:** 56 attacks, **44 held, 12 broke.** No input crashed the service or
+got a 500.
+
+| Family | Attacks | Held | Broke |
+|---|---|---|---|
+| evasion | 10 | 0 | 10 |
+| false_positive | 8 | 8 (6 of them only because of the short-text cap) | 0 |
+| prompt_injection | 6 | 5 | 1 (PI02) |
+| malformed | 20 | 19 | 1 (MF07) |
+| flood_same_creator | 12 | 12 | 0 |
+
+**Note on RQ10 and RQ11.** In the full run they came back 429, not 400. Neither
+has a JSON `creator_id` the limiter can read, so both counted against my
+machine's address. That address had already been used 5 times that minute by
+the other rows without a usable `creator_id` (RQ02, RQ06, RQ07, RQ08, RQ09), so
+the route never saw them. I re-sent each one on its own once the minute had
+reset (`results/attack_run_2026-11-08_1822_before_RQ10_retest.md`,
+`..._1823_before_RQ11_retest.md`), and both came back
+`400 body_not_json_object`. So the route handles them. The log has a smaller
+gap, though: the 429 entry for RQ10 says `"creator_id": "unknown"`, even though
+the form body said `creator_id=attacker_RQ10`. That's because the 429 handler
+only reads JSON bodies.
+
+**Ten audit log entries from the run** (from `logs/audit.jsonl`):
 
 ```json
-
+{"timestamp": "2026-11-08T23:21:23+00:00", "content_id": "b61176557130", "creator_id": "attacker_FP03", "guess": "unsure", "model_score": 0.8051, "style_score": 0.607, "combined_score": 0.69, "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.", "status": "decided", "word_count": 83}
+{"timestamp": "2026-11-08T23:21:23+00:00", "content_id": "02fb4c1422ee", "creator_id": "attacker_FP05", "guess": "unsure", "model_score": 0.8005, "style_score": 0.7692, "combined_score": 0.69, "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.", "status": "decided", "word_count": 70}
+{"timestamp": "2026-11-08T23:22:36+00:00", "content_id": "69a3bc82dd96", "creator_id": "control_base_ai", "guess": "unsure", "model_score": 0.6694, "style_score": 0.6661, "combined_score": 0.6681, "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.", "status": "decided", "word_count": 85}
+{"timestamp": "2026-11-08T23:21:23+00:00", "content_id": "d76de2ecad6b", "creator_id": "attacker_EV01", "guess": "unsure", "model_score": 0.1635, "style_score": 0.6661, "combined_score": 0.4323, "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.", "status": "decided", "word_count": 85}
+{"timestamp": "2026-11-08T23:21:23+00:00", "content_id": "1516855234ef", "creator_id": "attacker_EV10", "guess": "unsure", "model_score": 0.9792, "style_score": 0.6718, "combined_score": 0.69, "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.", "status": "decided", "word_count": 78}
+{"timestamp": "2026-11-08T23:21:23+00:00", "content_id": "671c1618fc28", "creator_id": "attacker_EV08", "guess": "human", "model_score": 0.2452, "style_score": 0.5643, "combined_score": 0.3728, "label": "We think this was written by a person.", "status": "decided", "word_count": 10}
+{"timestamp": "2026-11-08T23:21:23+00:00", "content_id": "a9999391e15c", "creator_id": "attacker_PI02", "guess": "human", "model_score": 0.2044, "style_score": 0.1668, "combined_score": 0.1894, "label": "We think this was written by a person.", "status": "decided", "word_count": 45}
+{"timestamp": "2026-11-08T23:21:23+00:00", "content_id": "2cea87d83da1", "creator_id": "attacker_PI05", "guess": "unsure", "model_score": 0.6401, "style_score": 0.1072, "combined_score": 0.4635, "label": "We couldn't tell who wrote this, so we're not making a call, and this is not an accusation.", "status": "decided", "word_count": 30}
+{"timestamp": "2026-11-08T23:21:23+00:00", "creator_id": "attacker_MF07", "event": "rejected", "status": "rejected", "reason": "text_too_short", "http_status": 400, "word_count": 0}
+{"timestamp": "2026-11-08T23:21:23+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "5 per 1 minute"}
+{"timestamp": "2026-11-08T23:21:23+00:00", "creator_id": "attacker_flood", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "5 per 1 minute"}
 ```
 
-**The single worst outcome** — the one I'd least want to explain to a writer
-whose work got caught by it:
+Why these: FP03 and FP05 are real writers whose scores sat at exactly the
+0.69 cap. The control shows real AI text scoring *lower* than those human
+pieces. EV01 is a 0.50 swing on signal one from typos alone. EV10 is AI text
+held back only by my own cap. EV08 and PI02 are AI text labelled
+**human**. PI05 shows the injected `"combined_score": 0.01` didn't reach the
+log: the real score (0.4635) did, and the submitted text is never written to
+the log at all. MF07 is an Arabic paragraph logged as **0 words**. The last two
+are rejections: the 429 for RQ10, logged as `unknown`, and one of the seven
+429s from the flood rows.
 
-
+**The single worst outcome:** FP03, the non-native English speaker. Their
+careful paragraph about their first month in a new country scored model 0.805
+and style 0.607. That combines to **0.726**, which is over my 0.70 AI line and
+higher than the actual AI paragraph (0.668). They saw "unsure" for one reason
+only: the piece is 83 words, and my rule caps anything under 100 words at 0.69.
+If they had written a little more, past 100 words, in the same plain
+style, nothing would have capped that 0.726, and my service would have told
+them it "flagged this as possibly AI-assisted". The same is true of FP02, FP04, FP05,
+FP06 and FP07 (uncapped scores 0.729 to 0.788). Nothing in this run accused a
+human, but six of the seven scored human pieces are one paragraph away from it.
+That writer is exactly the person both my signals are biased against.
 
 ---
 
