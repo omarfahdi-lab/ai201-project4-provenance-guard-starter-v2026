@@ -159,11 +159,23 @@ def style_signal(text: str) -> float:
     best. Vocabulary gets the least: on my samples the plainly-written human
     paragraph had the LOWEST variety of all, so leaning on it would accuse the
     same writer signal one already accuses.
+
+    ── Unit 8, Milestone 5: THE ONE IMPROVEMENT ──────────────────────────────
+    The formula above is what ran in the "before" runs. It is now:
+
+        style_signal = spread_ai            (weights 1.0 / 0 / 0)
+
+    Why: splitting criterion 4's miss by measure showed word variety runs
+    BACKWARDS (Claude's essays 0.153 AI-ish, my writing 0.409, the attack
+    set's human texts 0.651), and punctuation is a constant (about 1.0 for
+    every group, because almost nobody uses ; : ( ) ! ? or dashes). Together
+    they were half of this signal's weight and separated nothing, or the
+    wrong way. Sentence-length spread is the only measure pointing the right
+    way. The other two functions stay, so they can still be reported, but
+    they no longer count. Nothing else in the pipeline changed.
     """
     spread_ai = _clip(1 - sentence_length_spread(text) / 0.6)
-    ttr_ai = _clip((0.95 - type_token_ratio(text)) / 0.25)
-    punct_ai = _clip(1 - punctuation_density(text) / 0.05)
-    return round(0.5 * spread_ai + 0.2 * ttr_ai + 0.3 * punct_ai, 4)
+    return round(spread_ai, 4)
 
 
 def _clip(x: float) -> float:

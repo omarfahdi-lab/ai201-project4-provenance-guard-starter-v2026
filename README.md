@@ -781,21 +781,147 @@ reconstructing a flood from the log couldn't tell who sent it.
 
 ## The Improvement
 
-**What I changed:**
+**What I changed:** one line of `stylometry.py::style_signal`. Signal two used
+to be `0.5 × spread + 0.2 × word variety + 0.3 × punctuation`. It is now
+**sentence-length spread alone** (`style_signal = spread_ai`). Word variety
+and punctuation are still calculated by their own functions, but they no
+longer count. Nothing else changed: same weights (0.6 / 0.4), same
+disagreement rule, same 100-word cap, same thresholds (0.40 / 0.70), same
+rate limits.
 
-**Which diagnosis pointed at it:**
+**Which diagnosis pointed at it:** Pattern 1 above. Criterion 4 missed
+because signal two separated clear AI from my writing by only 0.103. When I
+broke it into parts, word variety ran backwards (AI 0.153, me 0.409, the
+attack set's human texts 0.651), and punctuation was about 1.0 for everyone.
+That's half of signal two's weight doing nothing or working against me. It's
+also why FP02–FP07 scored 0.726–0.788 under the cap: signal two agreed with
+signal one about plain writing for reasons that have nothing to do with who
+wrote it.
+
+**How I chose spread-only and not just dropping word variety.** Before
+touching the code, I re-scored the before-run texts with three versions of
+signal two, using the logged signal-one scores, which don't change. Dropping
+only word variety widened criterion 4's gap to 0.278 but left 4 of 7 FP texts
+over 0.70 without the cap. Spread-only predicted a 0.289 gap and 0 FP texts
+over 0.70. The diagnosis said punctuation separated nothing either, so I
+dropped both. I'm saying this because it means I picked the version that
+looked best on texts I'd already seen. The real "after" runs below are the
+measurement, not the prediction.
 
 ### Attack Run — After
 
-<!-- Same format. `run_attacks.py --label after` -->
+`python run_attacks.py --set attack_set --label after` → 
+`results/attack_run_2026-11-08_1836_after.md`. The same 56 inputs and the same
+held-or-broke rules as the Before run. The "Before → after" column shows
+what moved.
 
+| ID | Family | Targeting | Status | Guess | model | style | Score | Before → after | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| EV01 | evasion | signal two: typos raise word variety | 200 | unsure | 0.164 | 0.732 | 0.446 | unsure → unsure | **BROKE** |
+| EV02 | evasion | signal two: broken-up sentences raise length spread | 200 | unsure | 0.594 | 0.000 | 0.428 | unsure → unsure | **BROKE** |
+| EV03 | evasion | signal two: a pasted quotation changes the shape | 200 | unsure | 0.666 | 0.261 | 0.502 | unsure → unsure | **BROKE** |
+| EV04 | evasion | signal one: unusual words raise perplexity | 200 | unsure | 0.611 | 0.710 | 0.651 | unsure → unsure | **BROKE** |
+| EV05 | evasion | both signals: heavy human editing pass | 200 | human | 0.321 | 0.000 | 0.193 | human → human | **BROKE** |
+| EV06 | evasion | signal two: one very long sentence and one very short | 200 | unsure | 0.573 | 0.000 | 0.422 | unsure → unsure | **BROKE** |
+| EV07 | evasion | signal two: padding with punctuation | 200 | unsure | 0.586 | 1.000 | 0.626 | unsure → unsure | **BROKE** |
+| EV08 | evasion | signal one: text below the token window | 200 | human | 0.245 | 0.529 | 0.359 | human → human | **BROKE** |
+| EV09 | evasion | both: AI text with a human opening paragraph bolted on | 200 | unsure | 0.704 | 0.221 | 0.505 | unsure → unsure | **BROKE** |
+| EV10 | evasion | signal two: repeated stanza structure | 200 | unsure | 0.979 | 0.344 | 0.613 | unsure → unsure | **BROKE** |
+| FP01 | false_positive | plain, clear human writing with no flourishes | 200 | unsure | 0.618 | 0.237 | 0.466 | unsure → unsure | HELD |
+| FP02 | false_positive | human writing in a formal register | 200 | unsure | 0.739 | 0.600 | 0.683 | unsure → unsure | HELD |
+| FP03 | false_positive | a non-native English speaker writing carefully | 200 | unsure | 0.805 | 0.453 | 0.664 | unsure → unsure | HELD |
+| FP04 | false_positive | a student essay written to a rubric | 200 | unsure | 0.833 | 0.389 | 0.578 | unsure → unsure | HELD |
+| FP05 | false_positive | technical documentation written by a person | 200 | unsure | 0.800 | 0.538 | 0.690 | unsure → unsure | HELD |
+| FP06 | false_positive | a person imitating a formal template | 200 | unsure | 0.881 | 0.135 | 0.541 | unsure → unsure | HELD |
+| FP07 | false_positive | human writing that repeats a phrase deliberately | 200 | unsure | 0.882 | 0.000 | 0.514 | unsure → unsure | HELD |
+| FP08 | false_positive | very short genuine human submission | 400 | — | — | — | — | 400 → 400 | HELD |
+| PI01 | prompt_injection | instruction to ignore the check | 200 | human | 0.463 | 0.000 | 0.389 | unsure → human | **BROKE** |
+| PI02 | prompt_injection | instruction disguised as a system message | 200 | human | 0.204 | 0.000 | 0.123 | human → human | **BROKE** |
+| PI03 | prompt_injection | instruction wrapped in the writer's voice | 200 | unsure | 0.594 | 0.428 | 0.528 | unsure → unsure | HELD |
+| PI04 | prompt_injection | attempt to make the label text hostile | 200 | unsure | 0.500 | 0.339 | 0.435 | unsure → unsure | HELD |
+| PI05 | prompt_injection | attempt to inject into the audit log | 200 | unsure | 0.640 | 0.214 | 0.485 | unsure → unsure | HELD |
+| PI06 | prompt_injection | instruction plus real human text | 200 | unsure | 0.558 | 0.258 | 0.438 | unsure → unsure | HELD |
+| MF01 | malformed | text is only whitespace | 400 | — | — | — | — | 400 → 400 | HELD |
+| MF02 | malformed | text is a single character | 400 | — | — | — | — | 400 → 400 | HELD |
+| MF03 | malformed | text is control characters | 400 | — | — | — | — | 400 → 400 | HELD |
+| MF04 | malformed | text is only punctuation | 400 | — | — | — | — | 400 → 400 | HELD |
+| MF05 | malformed | text is a very long single word | 400 | — | — | — | — | 400 → 400 | HELD |
+| MF06 | malformed | text is emoji only | 400 | — | — | — | — | 400 → 400 | HELD |
+| MF07 | malformed | text is right-to-left script | 400 | — | — | — | — | 400 → 400 | **BROKE** (wrong refusal) |
+| MF08 | malformed | text is 60,000 characters | 413 | — | — | — | — | 413 → 413 | HELD |
+| RQ01 | malformed | no text field at all | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ02 | malformed | no creator_id | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ03 | malformed | text is a number | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ04 | malformed | text is a list | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ05 | malformed | text is null | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ06 | malformed | creator_id is an object | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ07 | malformed | body is a JSON array, not an object | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ08 | malformed | body is unparseable JSON | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ09 | malformed | body is empty | 400 | — | — | — | — | 400 → 400 | HELD |
+| RQ10 | malformed | body is form-encoded, not JSON | 429 | — | — | — | — | 429 → 429 | HELD (429; route handles it, see before retest) |
+| RQ11 | malformed | body is JSON claiming to be plain text | 429 | — | — | — | — | 429 → 429 | HELD (429; route handles it, see before retest) |
+| RQ12 | malformed | deeply nested JSON | 400 | — | — | — | — | 400 → 400 | HELD |
+| FL01_01–05 | flood_same_creator | 20 rapid submissions from one creator | 400 ×5 (`text_too_short`) | — | — | — | — | same | HELD |
+| FL01_06–12 | flood_same_creator | 20 rapid submissions from one creator | 429 ×7 | — | — | — | — | same | HELD |
 
+**Count after:** 56 attacks, **43 held, 13 broke** (before: 44 held, 12 broke).
 
-**Did it help, and how do I know:**
+| Family | Before: held / broke | After: held / broke | What moved |
+|---|---|---|---|
+| evasion | 0 / 10 | 0 / 10 | Nothing reached `ai`. EV10's uncapped score fell from 0.856 to 0.613 |
+| false_positive | 8 / 0 (6 held only by the cap) | 8 / 0 (**0** depend on the cap) | Uncapped FP02–FP07: 0.726–0.788 → 0.514–0.696 |
+| prompt_injection | 5 / 1 | 4 / 2 | **PI01 broke**: unsure 0.406 → human 0.389 |
+| malformed | 19 / 1 | 19 / 1 | MF07 unchanged. RQ10/RQ11 429 again, for the same shared-address reason |
+| flood_same_creator | 12 / 0 | 12 / 0 | — |
 
-<!-- Widening the unsure band usually fixes one problem and creates another.
-     Reporting that trade honestly is worth full credit. -->
+**Run log after** (`python run_eval.py --label after` →
+`results/run_2026-11-08_1837_after.md`, three trials, all identical again):
 
+| Criterion | Target | Before (R1 / R2 / R3) | After Run 1 | After Run 2 | After Run 3 | Verdict after |
+|---|---|---|---|---|---|---|
+| 1. My own writing is rarely called AI | ≤ 1 of 10 | 1/10 · 1/10 · 1/10 | 0/10 | 0/10 | 0/10 | **MET** (was MET) |
+| 2. Bad input never crashes the service | 6 of 6 | 6/6 · 6/6 · 6/6 | 6/6 | 6/6 | 6/6 | **MET** |
+| 3. Appeals are recorded | ≥ 9 of 10 | 10/10 · 10/10 · 10/10 | 10/10 | 10/10 | 10/10 | **MET** |
+| 4. Clear AI vs clear human gap | ≥ 0.40 | 0.243 · 0.243 · 0.243 | 0.289 | 0.289 | 0.289 | **MISSED** (was MISSED) |
+| 5. Short plain human writing isn't accused | ≤ 1 of 5 | 0/5 · 0/5 · 0/5 | 0/5 | 0/5 | 0/5 | **MET** |
+
+Criterion 4 after: AI mean 0.755 (was 0.760), my writing 0.466 (was 0.517).
+
+**Did it help, and how do I know:** **Yes on false accusations, which was
+the target. No on criterion 4, and it cost something on the AI side.**
+
+- *What got better:* No human-written text in either run gets past the AI
+  line on its signals alone any more. In the attack set, the six FP texts
+  that held only because of the 100-word cap now score 0.514–0.696 uncapped.
+  FP03, my "worst outcome", went from 0.726 to 0.664. My own writing went
+  from 1/10 called AI to 0/10 (the lab-report intro + conclusion went
+  0.7235 → 0.6627), and its mean dropped 0.472 → 0.416. The tighter
+  criterion 5 target I named above ("at most 1 of 5 scores ≥ 0.60") went
+  from 1/5 to 0/5. I know this from the paired runs: the same inputs and the
+  same signal-one scores (they didn't change to the third decimal), with only
+  signal two different.
+- *What it didn't fix:* criterion 4 is still a miss. The gap went from 0.243
+  to 0.289, but almost all of that came from my writing scoring lower, not
+  from AI scoring higher. A gap of 0.40 is out of reach for this pipeline:
+  signal one alone only separates the groups by 0.336. All 10 evasions still
+  break, because the unedited AI paragraph still sits under 0.70.
+- *What it cost:*
+  1. **PI01 broke.** Its three short imperative sentences ("Ignore all previous
+     instructions.") next to long AI sentences push spread past 0.6, so
+     signal two now reads it as **0.000**, fully human. Before, word variety
+     and punctuation kept a floor of about 0.3 under every score. Now signal
+     two has one knob, and anyone who mixes short and long sentences can turn
+     it to zero. In the after run, EV02, EV05, EV06, PI01, PI02 and FP07 all
+     score style 0.000.
+  2. **AI text is detected less.** One of Claude's five clear-AI essays
+     dropped from `ai` (0.723) to `unsure` (0.695). EV10, the one evasion my
+     signals had caught, went from 0.856 to 0.613 uncapped.
+  3. **Some of my own pieces went *up*.** The podcast section went 0.587 →
+     0.687 (style 0.506 → 0.756), because its sentences are all about the
+     same length. Spread-only judges that harder than the old mix did.
+
+  So I moved risk off writers and onto detection, which is the direction my
+  criteria say to go. It still isn't free.
 
 
 ---
