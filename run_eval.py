@@ -58,8 +58,59 @@ def bodies_for(scenario):
     ]
 
 
+def last_log_entry(requests, args):
+    """The newest audit-log entry, cut down to the fields worth reporting."""
+    entries = requests.get(f"{args.url}/log", params={"limit": 1},
+                           timeout=args.timeout).json().get("entries", [])
+    if not entries:
+        return None
+    e = entries[-1]
+    keep = ("event", "status", "reason", "http_status", "content_id", "guess",
+            "combined_score")
+    return {k: e[k] for k in keep if k in e}
+
+
+def appeal_check(requests, args, content_id):
+    """
+    Criterion 3: appeal the decision just made, then read the log back.
+
+    Passes only if the appeal answers `under_review`, the log has an appeal
+    entry for this content_id AFTER the decision, and the decision entry is
+    still exactly as it was before the appeal.
+    """
+    def history():
+        entries = requests.get(f"{args.url}/log", timeout=args.timeout).json()["entries"]
+        return [e for e in entries if e.get("content_id") == content_id]
+
+    before = history()
+    decision_before = next((e for e in before if e.get("status") == "decided"), None)
+    response = requests.post(f"{args.url}/appeal", json={
+        "content_id": content_id,
+        "reasoning": "I wrote this myself and would like a person to look at it.",
+    }, timeout=args.timeout)
+    body = response.json() if response.content else {}
+    after = history()
+    decision_after = next((e for e in after if e.get("status") == "decided"), None)
+    appeal_at = next((i for i, e in enumerate(after) if e.get("event") == "appeal"), None)
+    decision_at = next((i for i, e in enumerate(after) if e.get("status") == "decided"), None)
+    ok = (response.status_code == 200 and body.get("status") == "under_review"
+          and appeal_at is not None and decision_at is not None
+          and appeal_at > decision_at and decision_before == decision_after)
+    return {
+        "content_id": content_id,
+        "appeal_http": response.status_code,
+        "appeal_status": body.get("status"),
+        "log_has_appeal_after_decision": appeal_at is not None and decision_at is not None
+                                         and appeal_at > decision_at,
+        "decision_unchanged": decision_before == decision_after,
+        "appeal_passed": ok,
+    }
+
+
 def describe(body):
     """A short, readable note of what was sent — for the report."""
+    if not isinstance(body, dict):
+        return json.dumps(body)[:120]
     if set(body) == {"text", "creator_id"} and isinstance(body.get("text"), str):
         text = body["text"]
         return text[:70] if text else "(empty text)"
@@ -119,7 +170,7 @@ def main():
                     response = requests.post(f"{args.url}/submit", json=body,
                                              timeout=args.timeout)
                     payload = response.json() if response.content else {}
-                    results.append({
+                    result = {
                         "status": response.status_code,
                         "guess": payload.get("guess"),
                         "confidence": payload.get("confidence"),
@@ -127,13 +178,22 @@ def main():
                         "style_score": payload.get("style_score"),
                         "label": payload.get("label"),
                         "sent": preview,
-                    })
+                    }
+                    if payload.get("error"):
+                        result["error_field"] = payload["error"]
+                    # Requests go one at a time, so the newest log entry is
+                    # this request's. Criterion 2 needs to know a refusal
+                    # left a trace, not just that it was refused.
+                    result["log_entry"] = last_log_entry(requests, args)
+                    if scenario.get("appeal") and payload.get("content_id"):
+                        result.update(appeal_check(requests, args, payload["content_id"]))
+                    results.append(result)
                 except Exception as exc:  # noqa: BLE001
                     results.append({"status": None, "error": f"{type(exc).__name__}: {exc}",
                                     "sent": preview})
 
             trials.append(results)
-            guesses = [r.get("guess") or "—" for r in results]
+            guesses = [r.get("guess") or str(r.get("status")) for r in results]
             print(f"  trial {trial}: {', '.join(guesses)}")
 
         rows.append({"scenario": scenario, "trials": trials})
