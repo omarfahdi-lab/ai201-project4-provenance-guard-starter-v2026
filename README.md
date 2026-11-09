@@ -384,9 +384,11 @@ are where I made the call.
   files and left out documents that looked AI-assisted: one has a ChatGPT
   citation artifact, two say in their AI-use statements that Claude helped
   draft them, and one has 25 em dashes.
-- *What I changed:* ⚠️ **FILL IN** what you checked or changed after
-  reading this: which passages you confirmed are really yours, and whether
-  you agree with the verdicts and the trade above.
+- *What I changed:* nothing. I read Claude's summary of the results and
+  told it to finish and push without editing its write-up. The passages in
+  `scenarios.py` come from my own coursework files, but I did not go back
+  through each one line by line, so criterion 1 rests on those files being
+  my own writing.
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
