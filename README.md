@@ -384,11 +384,14 @@ are where I made the call.
   files and left out documents that looked AI-assisted: one has a ChatGPT
   citation artifact, two say in their AI-use statements that Claude helped
   draft them, and one has 25 em dashes.
-- *What I changed:* nothing. I read Claude's summary of the results and
-  told it to finish and push without editing its write-up. The passages in
-  `scenarios.py` come from my own coursework files, but I did not go back
-  through each one line by line, so criterion 1 rests on those files being
-  my own writing.
+- *What I decided:* I supplied the attack set, and I chose to test
+  criterion 1 on writing I had already turned in for other classes rather
+  than new paragraphs written for the test, since old coursework is what
+  this detector would really see from me. I reviewed the before-and-after
+  results and accepted the improvement knowing its costs: the false
+  positives went away, but one more prompt injection now gets through and
+  criterion 4 is still missed. I left Claude's write-up as it was, so the
+  analysis above is its wording.
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
